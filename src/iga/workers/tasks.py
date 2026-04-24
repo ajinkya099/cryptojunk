@@ -41,6 +41,7 @@ app.conf.update(
         "iga.workers.tasks.run_certification_agent": {"queue": "agents"},
         "iga.workers.tasks.run_sod_detector_agent": {"queue": "agents"},
         "iga.workers.tasks.run_role_miner_agent": {"queue": "agents"},
+        "iga.workers.tasks.run_dev_agent": {"queue": "dev"},
         "iga.workers.tasks.assess_access_request": {"queue": "realtime"},
     },
 )
@@ -76,6 +77,12 @@ app.conf.beat_schedule = {
         "task": "iga.workers.tasks.run_sod_detector_agent",
         "schedule": crontab(minute=0),
         "options": {"queue": "agents"},
+    },
+    # DevAgent: every 30 minutes — autonomously improves the codebase 24/7
+    "dev-agent-every-30-min": {
+        "task": "iga.workers.tasks.run_dev_agent",
+        "schedule": crontab(minute="*/30"),
+        "options": {"queue": "dev"},
     },
 }
 
@@ -270,6 +277,42 @@ Return JSON: {{"recommendation": "approve|reject|escalate", "risk_score": 0.0-10
         raise self.retry(exc=exc)
 
 
+@app.task(
+    name="iga.workers.tasks.run_dev_agent",
+    bind=True,
+    max_retries=1,
+    default_retry_delay=120,
+    time_limit=600,  # 10 min max per dev cycle
+)
+def run_dev_agent(self) -> dict[str, Any]:
+    """
+    Celery task: Run the DevAgent to autonomously improve the IGA codebase.
+
+    Runs every 30 minutes 24/7. Each cycle:
+    - Scans codebase for TODOs, gaps, missing tests
+    - Asks Claude what to implement next
+    - Claude writes the code
+    - Tests run — if green, commits and pushes to branch
+    """
+    from iga.agents.dev_agent import DevAgent
+
+    logger.info("celery_task_started", task="dev_agent")
+    try:
+        agent = DevAgent()
+        result = _run_async(agent.run())
+        logger.info("celery_task_completed", task="dev_agent", summary=result.summary())
+        return {
+            "success": result.success,
+            "files_scanned": result.items_processed,
+            "files_changed": result.items_actioned,
+            "errors": result.errors,
+            "duration_seconds": result.duration_seconds,
+        }
+    except Exception as exc:
+        logger.error("celery_task_failed", task="dev_agent", error=str(exc))
+        raise self.retry(exc=exc)
+
+
 def run_worker() -> None:
-    """Entry point for running the Celery worker."""
-    app.start(argv=["worker", "--loglevel=info", "-Q", "agents,realtime"])
+    """Entry point for running the Celery worker (all queues including dev)."""
+    app.start(argv=["worker", "--loglevel=info", "-Q", "agents,realtime,dev"])

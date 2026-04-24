@@ -10,6 +10,7 @@ import structlog
 
 from iga.agents.base import AgentResult
 from iga.agents.certification import CertificationAgent
+from iga.agents.dev_agent import DevAgent
 from iga.agents.lifecycle import LifecycleAgent
 from iga.agents.role_miner import RoleMinerAgent
 from iga.agents.sod_detector import SoDDetectorAgent
@@ -36,6 +37,7 @@ class AgentOrchestrator:
             "certification": CertificationAgent(),
             "sod_detector": SoDDetectorAgent(),
             "role_miner": RoleMinerAgent(),
+            "dev_agent": DevAgent(),
         }
         self.run_history: list[dict[str, Any]] = []
         self.log = structlog.get_logger("orchestrator")
@@ -72,8 +74,8 @@ class AgentOrchestrator:
         self.log.info("orchestrator_run_all_starting", parallel=parallel)
         results: dict[str, AgentResult] = {}
 
-        # Priority order: SoD first (security), then lifecycle, then certification, then mining
-        agent_order = ["sod_detector", "lifecycle", "certification", "role_miner"]
+        # Priority order: SoD first (security), then lifecycle, then certification, mining, then dev
+        agent_order = ["sod_detector", "lifecycle", "certification", "role_miner", "dev_agent"]
 
         if parallel:
             tasks = {
@@ -92,6 +94,11 @@ class AgentOrchestrator:
 
         self._log_summary(results)
         return results
+
+    async def run_dev_cycle(self) -> AgentResult | None:
+        """Trigger one autonomous development cycle — scan, code, test, commit, push."""
+        self.log.info("dev_cycle_triggered")
+        return await self.run_agent("dev_agent")
 
     async def run_emergency_sod_scan(self) -> AgentResult | None:
         """Trigger an immediate SoD scan (e.g., after a new role assignment)."""
